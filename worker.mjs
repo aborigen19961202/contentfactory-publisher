@@ -16,6 +16,7 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') params.help = true;
+    else if (arg === '--verify' || arg === '-v') params.verify = true;
     else if (arg === '--watch' || arg === '-w') params.watch = true;
     else if (arg === '--dry-run') params.dryRun = true;
     else if (arg === '--json') params.json = true;
@@ -289,6 +290,29 @@ async function main() {
   if (args.help) {
     printHelp();
     process.exit(0);
+  }
+
+  if (args.verify) {
+    const { verifyYouTubeAuth, getChannelInfo } = await import('./modules/youtube/index.mjs');
+    console.log('[Verify] 🔍 Connecting to YouTube API to inspect channel credentials...');
+    try {
+      const channel = await getChannelInfo();
+      console.log('\n======================================================');
+      console.log('       Authenticated YouTube Channel Details');
+      console.log('======================================================');
+      console.log(`📌 Channel Title : ${channel.title}`);
+      console.log(`🆔 Channel ID    : ${channel.id}`);
+      if (channel.customUrl) console.log(`🔗 Custom URL    : https://youtube.com/${channel.customUrl}`);
+      console.log(`👥 Subscribers   : ${channel.subscriberCount}`);
+      console.log(`🎬 Total Videos  : ${channel.videoCount}`);
+      console.log(`👁️ Total Views   : ${channel.viewCount}`);
+      console.log('======================================================\n');
+      console.log('✅ Authentication is 100% active and working!\n');
+    } catch (err) {
+      console.error('\n❌ YouTube Authentication Verification Failed:', err.message);
+      process.exit(1);
+    }
+    return;
   }
 
   if (args.watch) {

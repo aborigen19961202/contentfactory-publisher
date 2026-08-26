@@ -1,3 +1,4 @@
+import { google } from 'googleapis';
 import { uploadVideo } from './upload.mjs';
 import { getAuthenticatedClient } from './auth.mjs';
 
@@ -12,15 +13,45 @@ export async function publishToYouTube(options) {
 }
 
 /**
+ * Fetches authenticated channel profile details.
+ */
+export async function getChannelInfo() {
+  const auth = await getAuthenticatedClient();
+  const youtube = google.youtube({ version: 'v3', auth });
+
+  const res = await youtube.channels.list({
+    part: ['snippet', 'statistics'],
+    mine: true,
+  });
+
+  if (!res.data.items || res.data.items.length === 0) {
+    throw new Error('No YouTube channel found for the authenticated account.');
+  }
+
+  const channel = res.data.items[0];
+  return {
+    id: channel.id,
+    title: channel.snippet.title,
+    description: channel.snippet.description,
+    customUrl: channel.snippet.customUrl || null,
+    publishedAt: channel.snippet.publishedAt,
+    subscriberCount: channel.statistics.subscriberCount,
+    videoCount: channel.statistics.videoCount,
+    viewCount: channel.statistics.viewCount,
+  };
+}
+
+/**
  * Verifies if valid credentials and authentication tokens are active.
  */
 export async function verifyYouTubeAuth() {
   try {
-    const client = await getAuthenticatedClient();
-    return { ok: true, message: 'YouTube credentials and tokens are valid.' };
+    const info = await getChannelInfo();
+    return { ok: true, channel: info };
   } catch (err) {
     return { ok: false, message: err.message };
   }
 }
 
 export { uploadVideo, getAuthenticatedClient };
+
