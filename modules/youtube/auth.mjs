@@ -22,7 +22,11 @@ function getTokenPath() {
  */
 export function getOAuth2Client() {
   let clientId = process.env.YOUTUBE_CLIENT_ID;
+  if (clientId && clientId.includes('your_client_id_here')) clientId = null;
+
   let clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
+  if (clientSecret && clientSecret.includes('your_client_secret_here')) clientSecret = null;
+
   let redirectUri = process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
 
   // Check if a downloaded Google OAuth client_secret.json file exists
@@ -46,8 +50,8 @@ export function getOAuth2Client() {
         const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         const creds = raw.installed || raw.web;
         if (creds && creds.client_id && creds.client_secret) {
-          clientId = clientId || creds.client_id;
-          clientSecret = clientSecret || creds.client_secret;
+          clientId = creds.client_id;
+          clientSecret = creds.client_secret;
           if (creds.redirect_uris && creds.redirect_uris.length > 0) {
             redirectUri = process.env.YOUTUBE_REDIRECT_URI || creds.redirect_uris[0] || redirectUri;
           }
