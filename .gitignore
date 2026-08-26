@@ -6,6 +6,9 @@ node_modules/
 .env.local
 .tokens/
 *.token.json
+client_secret*.json
+client.json
+credentials.json
 
 # Media files
 *.mp4

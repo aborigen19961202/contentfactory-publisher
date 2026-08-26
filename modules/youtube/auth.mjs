@@ -18,14 +18,51 @@ function getTokenPath() {
 
 /**
  * Creates and configures the OAuth2 client.
+ * Supports both .env variables and downloaded Google client_secret*.json files.
  */
 export function getOAuth2Client() {
-  const clientId = process.env.YOUTUBE_CLIENT_ID;
-  const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
-  const redirectUri = process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
+  let clientId = process.env.YOUTUBE_CLIENT_ID;
+  let clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
+  let redirectUri = process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
+
+  // Check if a downloaded Google OAuth client_secret.json file exists
+  const candidateFiles = [
+    'client_secret.json',
+    'client.json',
+    'credentials.json',
+  ];
+
+  // Also check any file matching client_secret_*.json
+  const cwdFiles = fs.readdirSync(process.cwd());
+  const matchedSecretFile = cwdFiles.find((f) => f.startsWith('client_secret_') && f.endsWith('.json'));
+  if (matchedSecretFile) {
+    candidateFiles.unshift(matchedSecretFile);
+  }
+
+  for (const file of candidateFiles) {
+    const filePath = path.join(process.cwd(), file);
+    if (fs.existsSync(filePath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const creds = raw.installed || raw.web;
+        if (creds && creds.client_id && creds.client_secret) {
+          clientId = clientId || creds.client_id;
+          clientSecret = clientSecret || creds.client_secret;
+          if (creds.redirect_uris && creds.redirect_uris.length > 0) {
+            redirectUri = process.env.YOUTUBE_REDIRECT_URI || creds.redirect_uris[0] || redirectUri;
+          }
+          break;
+        }
+      } catch (_) {
+        // ignore parse error and fall back to env
+      }
+    }
+  }
 
   if (!clientId || !clientSecret) {
-    throw new Error('Missing YOUTUBE_CLIENT_ID or YOUTUBE_CLIENT_SECRET in environment variables.');
+    throw new Error(
+      'Missing YouTube OAuth credentials. Either set YOUTUBE_CLIENT_ID & YOUTUBE_CLIENT_SECRET in .env, or place downloaded client_secret.json in project root.'
+    );
   }
 
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
