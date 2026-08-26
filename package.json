@@ -1,0 +1,27 @@
+{
+  "name": "contentfactory-publisher",
+  "version": "1.0.0",
+  "description": "Autonomous multi-platform video publishing engine for ContentFactory",
+  "main": "worker.mjs",
+  "type": "module",
+  "scripts": {
+    "auth:youtube": "node modules/youtube/auth.mjs",
+    "publish": "node worker.mjs",
+    "watch": "node worker.mjs --watch",
+    "test": "node --check worker.mjs modules/youtube/index.mjs modules/notifications/index.mjs"
+  },
+  "keywords": [
+    "contentfactory",
+    "youtube",
+    "publisher",
+    "automation",
+    "video-upload"
+  ],
+  "author": "ContentFactory",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "googleapis": "^144.0.0",
+    "pg": "^8.13.1"
+  }
+}
