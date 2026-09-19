@@ -122,11 +122,11 @@ async function publishTopicFromDb(topicId, options = {}) {
     const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
 
     const title = options.title || topic.title;
-    const description = options.description || topic.topic_context || `3D comparison visualization for ${topic.title}`;
+    const description = options.description || '';
     const tags = options.tags
       ? (typeof options.tags === 'string' ? options.tags.split(',').map((t) => t.trim()).filter(Boolean) : options.tags)
       : (topic.youtube_tags || ['contentfactory', '3d-comparison', 'ranking']);
-    const privacy = options.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted';
+    const privacy = options.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'private';
     const publishAt = options.publishAt || null;
     const channel = options.channel || null;
     const proxy = options.proxy || null;
@@ -276,7 +276,7 @@ async function publishDirectFile(options) {
 
   const fileStats = fs.statSync(resolvedVideoPath);
   const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
-  const privacy = options.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted';
+  const privacy = options.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'private';
   const publishAt = options.publishAt || null;
   const channel = options.channel || null;
   const proxy = options.proxy || null;

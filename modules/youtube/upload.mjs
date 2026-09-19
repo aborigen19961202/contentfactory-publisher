@@ -25,7 +25,7 @@ export async function uploadVideo(options) {
     title,
     description = '',
     tags = [],
-    privacy = process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted',
+    privacy = process.env.YOUTUBE_DEFAULT_PRIVACY || 'private',
     publishAt,
     categoryId = process.env.YOUTUBE_DEFAULT_CATEGORY_ID || 27,
     channel,
