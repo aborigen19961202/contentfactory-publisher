@@ -28,6 +28,8 @@ export async function uploadVideo(options) {
     privacy = process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted',
     publishAt,
     categoryId = process.env.YOUTUBE_DEFAULT_CATEGORY_ID || 27,
+    channel,
+    proxy,
     onProgress,
   } = options;
 
@@ -44,12 +46,14 @@ export async function uploadVideo(options) {
     throw new Error('[YouTube Upload] Missing required parameter: title');
   }
 
-  const oauth2Client = await getAuthenticatedClient();
+  const oauth2Client = await getAuthenticatedClient({ channel, proxy });
   const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
 
   const fileStats = fs.statSync(resolvedVideoPath);
   const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
   console.log(`[YouTube Upload] Starting streaming upload: "${path.basename(resolvedVideoPath)}" (${fileSizeMb} MB)...`);
+  if (channel) console.log(`[YouTube Upload] Target channel profile: "${channel}"`);
+  if (proxy) console.log(`[YouTube Upload] Network proxy active: "${proxy}"`);
 
   const parsedTags = Array.isArray(tags)
     ? tags
@@ -75,6 +79,7 @@ export async function uploadVideo(options) {
     console.log(`[YouTube Upload] Video scheduled for release at: ${requestBody.status.publishAt}`);
   }
 
+  let lastReportedPercent = -1;
   const res = await youtube.videos.insert(
     {
       part: ['snippet', 'status'],
@@ -84,11 +89,15 @@ export async function uploadVideo(options) {
       },
     },
     {
-      // Optional streaming progress hooks
       onUploadProgress: (evt) => {
-        const progress = (evt.bytesRead / fileStats.size) * 100;
+        const percent = Math.floor((evt.bytesRead / fileStats.size) * 100);
+        if (percent !== lastReportedPercent && (percent % 5 === 0 || percent === 100)) {
+          lastReportedPercent = percent;
+          const readMb = (evt.bytesRead / (1024 * 1024)).toFixed(1);
+          console.log(`[YouTube Upload] ⏳ Uploading: ${percent}% (${readMb} / ${fileSizeMb} MB)`);
+        }
         if (onProgress) {
-          onProgress(progress, evt.bytesRead, fileStats.size);
+          onProgress(percent, evt.bytesRead, fileStats.size);
         }
       },
     }

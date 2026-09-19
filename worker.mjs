@@ -44,14 +44,14 @@ Usage:
   node worker.mjs [options]
 
 Modes:
-  1. Single Topic Publish:
-     node worker.mjs --topic <topic_id>
+  1. Single Topic Publish (from PostgreSQL):
+     node worker.mjs --topic <topic_id> [--privacy unlisted] [--channel <name>] [--dry-run]
 
   2. Direct File Upload (CLI mode):
-     node worker.mjs --video "out/video.mp4" --thumbnail "out/thumb.png" --title "My Title"
+     node worker.mjs --video "out/video.mp4" --title "My Title" [--privacy unlisted]
 
-  3. Watch / Daemon Mode (Listens to PostgreSQL):
-     node worker.mjs --watch
+  3. Verify Channel Authorization:
+     node worker.mjs --verify [--channel <name>]
 
 Options:
   --topic <id>            Topic ID to publish from database
@@ -62,6 +62,8 @@ Options:
   --tags <list>           Comma-separated tags (e.g. "3d,scale,ranking")
   --privacy <level>       Privacy status: 'private', 'unlisted', 'public' (default: unlisted)
   --publish-at <iso_date> Scheduled publication time (e.g. 2026-09-01T18:00:00Z)
+  --channel <name>        Channel profile name in ~/.config/contentfactory/channels/<name>
+  --proxy <url>           HTTP/HTTPS/SOCKS5 proxy (e.g. http://user:pass@host:port)
   --dry-run               Simulate execution without actual upload
   --json                  Output clean JSON result to stdout
   --help, -h              Show this help message
@@ -84,58 +86,107 @@ async function publishTopicFromDb(topicId, options = {}) {
   const startTime = Date.now();
 
   try {
-    const res = await pool.query('SELECT * FROM topics WHERE id = $1', [topicId]);
+    const res = await pool.query(
+      `SELECT t.id, t.title, t.youtube_tags, t.topic_context,
+              rj.output_path AS render_output_path
+       FROM topics t
+       LEFT JOIN LATERAL (
+         SELECT output_path FROM render_jobs
+         WHERE topic_id = t.id AND status = 'completed'
+         ORDER BY id DESC LIMIT 1
+       ) rj ON true
+       WHERE t.id = $1`,
+      [topicId]
+    );
     if (res.rows.length === 0) {
       throw new Error(`Topic #${topicId} not found in database.`);
     }
 
     const topic = res.rows[0];
-    const context = topic.topic_context || {};
+    const videoPath = options.video || topic.render_output_path || `out/topic_${topicId}.mp4`;
+    const resolvedVideoPath = path.resolve(videoPath);
 
-    const videoPath = options.video || context.video_path || context.output_path || `out/topic_${topicId}.mp4`;
-    const thumbnailPath = options.thumbnail || context.thumbnail_path || `out/topic_${topicId}_thumb.png`;
-    const title = options.title || context.seo_title || topic.title;
-    const description = options.description || context.seo_description || `3D comparison visualization for ${topic.title}`;
-    const tags = options.tags || context.seo_tags || ['contentfactory', '3d-comparison', 'ranking'];
-    const privacy = options.privacy || context.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted';
-    const publishAt = options.publishAt || context.publish_at || null;
+    if (!fs.existsSync(resolvedVideoPath)) {
+      throw new Error(`Video file not found at: ${resolvedVideoPath}`);
+    }
+
+    const fileStats = fs.statSync(resolvedVideoPath);
+    const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
+
+    const title = options.title || topic.title;
+    const description = options.description || topic.topic_context || `3D comparison visualization for ${topic.title}`;
+    const tags = options.tags
+      ? (typeof options.tags === 'string' ? options.tags.split(',').map((t) => t.trim()).filter(Boolean) : options.tags)
+      : (topic.youtube_tags || ['contentfactory', '3d-comparison', 'ranking']);
+    const privacy = options.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted';
+    const publishAt = options.publishAt || null;
+    const channel = options.channel || null;
+    const proxy = options.proxy || null;
+    const thumbnailPath = options.thumbnail ? path.resolve(options.thumbnail) : null;
 
     if (!options.json) {
       console.log(`[Worker] Preparing publication for Topic #${topicId}: "${title}"`);
-      console.log(`[Worker] Video path: ${videoPath}`);
-      console.log(`[Worker] Thumbnail path: ${thumbnailPath}`);
+      console.log(`[Worker] Video path: ${resolvedVideoPath} (${fileSizeMb} MB)`);
+      if (thumbnailPath) console.log(`[Worker] Thumbnail path: ${thumbnailPath}`);
+      if (channel) console.log(`[Worker] Channel profile: ${channel}`);
+      if (proxy) console.log(`[Worker] Network proxy: ${proxy}`);
+      console.log(`[Worker] Privacy: ${privacy}${publishAt ? ` (Scheduled: ${publishAt})` : ''}`);
     }
 
     if (options.dryRun) {
-      console.log('[Worker] 🔍 Dry-run mode active. Skipping actual upload.');
-      return { success: true, dryRun: true, topicId, title, videoPath };
+      const dryOutput = {
+        success: true,
+        dryRun: true,
+        topicId,
+        title,
+        channel,
+        privacy,
+        publishAt,
+        videoPath: resolvedVideoPath,
+        fileSizeMb: parseFloat(fileSizeMb),
+        tagsCount: tags.length,
+        tags,
+        thumbnailAttached: Boolean(thumbnailPath && fs.existsSync(thumbnailPath)),
+      };
+      if (!options.json) {
+        console.log('\n======================================================');
+        console.log('       [Dry-Run] Video Upload Verification');
+        console.log('======================================================');
+        console.log(`📌 Topic ID     : #${topicId}`);
+        console.log(`🎬 Title        : ${title}`);
+        console.log(`🔒 Privacy      : ${privacy}${publishAt ? ` (Scheduled: ${publishAt})` : ''}`);
+        console.log(`📁 Video Path   : ${resolvedVideoPath} (${fileSizeMb} MB)`);
+        console.log(`🏷️ Tags (${tags.length}) : ${tags.join(', ')}`);
+        console.log(`🖼️ Thumbnail    : ${thumbnailPath || 'None (auto-generated by YouTube)'}`);
+        if (channel) console.log(`👤 Channel      : ${channel}`);
+        if (proxy) console.log(`🌐 Proxy        : ${proxy}`);
+        console.log('======================================================\n');
+        console.log('✅ Dry-run check PASSED! Ready for live upload.');
+      } else {
+        console.log(JSON.stringify(dryOutput));
+      }
+      return dryOutput;
     }
 
     // Step 1: Upload to YouTube
     const publishResult = await publishToYouTube({
-      videoPath,
-      thumbnailPath: fs.existsSync(thumbnailPath) ? thumbnailPath : null,
+      videoPath: resolvedVideoPath,
+      thumbnailPath: thumbnailPath && fs.existsSync(thumbnailPath) ? thumbnailPath : null,
       title,
       description,
       tags,
       privacy,
       publishAt,
+      channel,
+      proxy,
     });
 
     const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    // Step 2: Update topic in database
-    const updatedContext = {
-      ...context,
-      youtube_video_id: publishResult.videoId,
-      youtube_url: publishResult.url,
-      published_at: new Date().toISOString(),
-      publish_duration_seconds: parseFloat(durationSeconds),
-    };
-
+    // Step 2: Update topic in database to 'published'
     await pool.query(
-      "UPDATE topics SET status = 'published', topic_context = $2 WHERE id = $1",
-      [topicId, JSON.stringify(updatedContext)]
+      "UPDATE topics SET status = 'published' WHERE id = $1",
+      [topicId]
     );
 
     if (!options.json) {
@@ -143,20 +194,27 @@ async function publishTopicFromDb(topicId, options = {}) {
     }
 
     // Step 3: Send Telegram Notification
-    await notifyPublishResult({
-      success: true,
-      topicId,
-      topicTitle: title,
-      videoUrl: publishResult.url,
-      privacyStatus: publishResult.privacyStatus,
-      durationSeconds,
-    });
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+      try {
+        await notifyPublishResult({
+          success: true,
+          topicId,
+          topicTitle: title,
+          videoUrl: publishResult.url,
+          privacyStatus: publishResult.privacyStatus,
+          durationSeconds,
+        });
+      } catch (telErr) {
+        console.warn('[Worker] Telegram notification failed:', telErr.message);
+      }
+    }
 
     const output = {
       success: true,
       topicId,
       videoId: publishResult.videoId,
       url: publishResult.url,
+      privacyStatus: publishResult.privacyStatus,
       durationSeconds,
     };
 
@@ -170,20 +228,15 @@ async function publishTopicFromDb(topicId, options = {}) {
     console.error(`[Worker] ❌ Failed to publish topic #${topicId}:`, errorMsg);
 
     try {
-      await pool.query(
-        "UPDATE topics SET status = 'publish_failed', topic_context = jsonb_set(COALESCE(topic_context, '{}'::jsonb), '{publish_error}', $2::jsonb) WHERE id = $1",
-        [topicId, JSON.stringify(errorMsg)]
-      );
-
-      await notifyPublishResult({
-        success: false,
-        topicId,
-        topicTitle: `Topic #${topicId}`,
-        error: errorMsg,
-      });
-    } catch (dbErr) {
-      console.error('[Worker] Failed to update error status in DB:', dbErr.message);
-    }
+      if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+        await notifyPublishResult({
+          success: false,
+          topicId,
+          topicTitle: `Topic #${topicId}`,
+          error: errorMsg,
+        });
+      }
+    } catch (_) {}
 
     if (options.json) {
       console.log(JSON.stringify({ success: false, topicId, error: errorMsg }));
@@ -208,36 +261,87 @@ async function publishDirectFile(options) {
     throw new Error('Missing --title argument for direct publication.');
   }
 
+  const resolvedVideoPath = path.resolve(options.video);
+  if (!fs.existsSync(resolvedVideoPath)) {
+    throw new Error(`Video file not found at: ${resolvedVideoPath}`);
+  }
+
+  const fileStats = fs.statSync(resolvedVideoPath);
+  const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
+  const privacy = options.privacy || process.env.YOUTUBE_DEFAULT_PRIVACY || 'unlisted';
+  const publishAt = options.publishAt || null;
+  const channel = options.channel || null;
+  const proxy = options.proxy || null;
+  const thumbnailPath = options.thumbnail ? path.resolve(options.thumbnail) : null;
+  const tags = options.tags
+    ? (typeof options.tags === 'string' ? options.tags.split(',').map((t) => t.trim()).filter(Boolean) : options.tags)
+    : [];
+
   if (options.dryRun) {
-    console.log('[Worker] 🔍 Dry-run mode active. Skipping actual upload.');
-    return { success: true, dryRun: true, options };
+    const dryOutput = {
+      success: true,
+      dryRun: true,
+      title: options.title,
+      channel,
+      privacy,
+      publishAt,
+      videoPath: resolvedVideoPath,
+      fileSizeMb: parseFloat(fileSizeMb),
+      tagsCount: tags.length,
+      tags,
+      thumbnailAttached: Boolean(thumbnailPath && fs.existsSync(thumbnailPath)),
+    };
+    if (!options.json) {
+      console.log('\n======================================================');
+      console.log('       [Dry-Run] Direct File Upload Verification');
+      console.log('======================================================');
+      console.log(`🎬 Title        : ${options.title}`);
+      console.log(`🔒 Privacy      : ${privacy}${publishAt ? ` (Scheduled: ${publishAt})` : ''}`);
+      console.log(`📁 Video Path   : ${resolvedVideoPath} (${fileSizeMb} MB)`);
+      console.log(`🏷️ Tags (${tags.length}) : ${tags.join(', ')}`);
+      console.log(`🖼️ Thumbnail    : ${thumbnailPath || 'None (auto-generated by YouTube)'}`);
+      if (channel) console.log(`👤 Channel      : ${channel}`);
+      if (proxy) console.log(`🌐 Proxy        : ${proxy}`);
+      console.log('======================================================\n');
+      console.log('✅ Dry-run check PASSED! Ready for live upload.');
+    } else {
+      console.log(JSON.stringify(dryOutput));
+    }
+    return dryOutput;
   }
 
   const publishResult = await publishToYouTube({
-    videoPath: options.video,
-    thumbnailPath: options.thumbnail,
+    videoPath: resolvedVideoPath,
+    thumbnailPath: thumbnailPath && fs.existsSync(thumbnailPath) ? thumbnailPath : null,
     title: options.title,
     description: options.description || '',
-    tags: options.tags || [],
-    privacy: options.privacy || 'unlisted',
-    publishAt: options.publishAt,
+    tags,
+    privacy,
+    publishAt,
+    channel,
+    proxy,
   });
 
   const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
 
-  await notifyPublishResult({
-    success: true,
-    topicId: 'CLI-Direct',
-    topicTitle: options.title,
-    videoUrl: publishResult.url,
-    privacyStatus: publishResult.privacyStatus,
-    durationSeconds,
-  });
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+    try {
+      await notifyPublishResult({
+        success: true,
+        topicId: 'CLI-Direct',
+        topicTitle: options.title,
+        videoUrl: publishResult.url,
+        privacyStatus: publishResult.privacyStatus,
+        durationSeconds,
+      });
+    } catch (_) {}
+  }
 
   const output = {
     success: true,
     videoId: publishResult.videoId,
     url: publishResult.url,
+    privacyStatus: publishResult.privacyStatus,
     durationSeconds,
   };
 
@@ -267,10 +371,6 @@ async function runWatchDaemon() {
       if (res.rows.length > 0) {
         const topicId = res.rows[0].id;
         console.log(`[Worker] 🔔 Found candidate topic #${topicId} with status='render_complete'. Starting publication...`);
-        
-        // Optimistic lock: set to 'publishing'
-        await pool.query("UPDATE topics SET status = 'publishing' WHERE id = $1", [topicId]);
-        
         await publishTopicFromDb(topicId);
       }
     } catch (err) {
@@ -293,10 +393,10 @@ async function main() {
   }
 
   if (args.verify) {
-    const { verifyYouTubeAuth, getChannelInfo } = await import('./modules/youtube/index.mjs');
+    const { getChannelInfo } = await import('./modules/youtube/index.mjs');
     console.log('[Verify] 🔍 Connecting to YouTube API to inspect channel credentials...');
     try {
-      const channel = await getChannelInfo();
+      const channel = await getChannelInfo({ channel: args.channel, proxy: args.proxy });
       console.log('\n======================================================');
       console.log('       Authenticated YouTube Channel Details');
       console.log('======================================================');
@@ -306,6 +406,8 @@ async function main() {
       console.log(`👥 Subscribers   : ${channel.subscriberCount}`);
       console.log(`🎬 Total Videos  : ${channel.videoCount}`);
       console.log(`👁️ Total Views   : ${channel.viewCount}`);
+      if (args.channel) console.log(`👤 Profile Name  : ${args.channel}`);
+      if (args.proxy) console.log(`🌐 Proxy Used    : ${args.proxy}`);
       console.log('======================================================\n');
       console.log('✅ Authentication is 100% active and working!\n');
     } catch (err) {

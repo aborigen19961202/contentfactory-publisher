@@ -15,8 +15,8 @@ export async function publishToYouTube(options) {
 /**
  * Fetches authenticated channel profile details.
  */
-export async function getChannelInfo() {
-  const auth = await getAuthenticatedClient();
+export async function getChannelInfo(options = {}) {
+  const auth = await getAuthenticatedClient(options);
   const youtube = google.youtube({ version: 'v3', auth });
 
   const res = await youtube.channels.list({
@@ -44,9 +44,9 @@ export async function getChannelInfo() {
 /**
  * Verifies if valid credentials and authentication tokens are active.
  */
-export async function verifyYouTubeAuth() {
+export async function verifyYouTubeAuth(options = {}) {
   try {
-    const info = await getChannelInfo();
+    const info = await getChannelInfo(options);
     return { ok: true, channel: info };
   } catch (err) {
     return { ok: false, message: err.message };

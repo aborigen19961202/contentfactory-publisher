@@ -5,6 +5,8 @@ import url from 'node:url';
 import { google } from 'googleapis';
 import dotenv from 'dotenv';
 
+import { homedir } from 'node:os';
+
 dotenv.config();
 
 const SCOPES = [
@@ -12,15 +14,44 @@ const SCOPES = [
   'https://www.googleapis.com/auth/youtube',
 ];
 
-function getTokenPath() {
+export function resolveChannelProfileDir(channelName) {
+  if (!channelName) return null;
+  const candidates = [
+    path.join(homedir(), '.config', 'contentfactory', 'channels', channelName),
+    path.join(process.cwd(), 'channels', channelName),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  return candidates[0];
+}
+
+function applyProxy(proxyUrl) {
+  if (proxyUrl) {
+    process.env.HTTPS_PROXY = proxyUrl;
+    process.env.HTTP_PROXY = proxyUrl;
+    process.env.https_proxy = proxyUrl;
+    process.env.http_proxy = proxyUrl;
+  }
+}
+
+function getTokenPath(channelName) {
+  if (channelName) {
+    const profileDir = resolveChannelProfileDir(channelName);
+    const channelToken = path.join(profileDir, 'token.json');
+    if (fs.existsSync(channelToken)) return channelToken;
+  }
   return process.env.YOUTUBE_TOKEN_PATH || path.join(process.cwd(), '.tokens', 'youtube.json');
 }
 
 /**
  * Creates and configures the OAuth2 client.
- * Supports both .env variables and downloaded Google client_secret*.json files.
+ * Supports channel profiles, .env variables and downloaded Google client_secret*.json files.
  */
-export function getOAuth2Client() {
+export function getOAuth2Client(options = {}) {
+  const { channel, proxy } = options;
+  applyProxy(proxy);
+
   let clientId = process.env.YOUTUBE_CLIENT_ID;
   if (clientId && clientId.includes('your_client_id_here')) clientId = null;
 
@@ -29,22 +60,32 @@ export function getOAuth2Client() {
 
   let redirectUri = process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
 
-  // Check if a downloaded Google OAuth client_secret.json file exists
-  const candidateFiles = [
-    'client_secret.json',
-    'client.json',
-    'credentials.json',
-  ];
+  // Check channel profile directory first if specified
+  const candidateFiles = [];
+  if (channel) {
+    const profileDir = resolveChannelProfileDir(channel);
+    candidateFiles.push(
+      path.join(profileDir, 'client_secret.json'),
+      path.join(profileDir, 'client.json'),
+      path.join(profileDir, 'credentials.json')
+    );
+  }
+
+  // Check local root candidate files
+  candidateFiles.push(
+    path.join(process.cwd(), 'client_secret.json'),
+    path.join(process.cwd(), 'client.json'),
+    path.join(process.cwd(), 'credentials.json')
+  );
 
   // Also check any file matching client_secret_*.json
   const cwdFiles = fs.readdirSync(process.cwd());
   const matchedSecretFile = cwdFiles.find((f) => f.startsWith('client_secret_') && f.endsWith('.json'));
   if (matchedSecretFile) {
-    candidateFiles.unshift(matchedSecretFile);
+    candidateFiles.unshift(path.join(process.cwd(), matchedSecretFile));
   }
 
-  for (const file of candidateFiles) {
-    const filePath = path.join(process.cwd(), file);
+  for (const filePath of candidateFiles) {
     if (fs.existsSync(filePath)) {
       try {
         const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -58,14 +99,14 @@ export function getOAuth2Client() {
           break;
         }
       } catch (_) {
-        // ignore parse error and fall back to env
+        // ignore parse error and fall back
       }
     }
   }
 
   if (!clientId || !clientSecret) {
     throw new Error(
-      'Missing YouTube OAuth credentials. Either set YOUTUBE_CLIENT_ID & YOUTUBE_CLIENT_SECRET in .env, or place downloaded client_secret.json in project root.'
+      'Missing YouTube OAuth credentials. Either set YOUTUBE_CLIENT_ID & YOUTUBE_CLIENT_SECRET in .env, or place client_secret.json in channel profile or project root.'
     );
   }
 
@@ -75,9 +116,12 @@ export function getOAuth2Client() {
 /**
  * Loads saved credentials or throws if not authenticated.
  */
-export async function getAuthenticatedClient() {
-  const oauth2Client = getOAuth2Client();
-  const tokenPath = getTokenPath();
+export async function getAuthenticatedClient(options = {}) {
+  const { channel, proxy } = options;
+  applyProxy(proxy);
+
+  const oauth2Client = getOAuth2Client(options);
+  const tokenPath = getTokenPath(channel);
 
   if (!fs.existsSync(tokenPath)) {
     throw new Error(
@@ -94,7 +138,7 @@ export async function getAuthenticatedClient() {
     const updated = { ...tokens, ...newTokens };
     fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
     fs.writeFileSync(tokenPath, JSON.stringify(updated, null, 2), 'utf8');
-    console.log('[YouTube Auth] Tokens refreshed and updated successfully.');
+    console.log(`[YouTube Auth] Tokens refreshed and updated successfully at "${tokenPath}".`);
   });
 
   return oauth2Client;
