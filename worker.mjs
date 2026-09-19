@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import { publishToYouTube } from './modules/youtube/index.mjs';
@@ -71,7 +72,14 @@ Options:
 }
 
 async function getDbPool() {
-  const connectionString = process.env.DATABASE_URL;
+  let connectionString = process.env.DATABASE_URL || process.env.CONTENTFACTORY_DATABASE_URL;
+  if (!connectionString || connectionString.includes('contentfactory_publisher')) {
+    try {
+      const dbEnv = fs.readFileSync(path.join(homedir(), '.config', 'contentfactory', 'database.env'), 'utf8');
+      const match = dbEnv.match(/CONTENTFACTORY_DATABASE_URL=['"]?([^'"\n]+)/);
+      if (match) connectionString = match[1];
+    } catch (_) {}
+  }
   if (!connectionString) {
     throw new Error('DATABASE_URL is not set in environment.');
   }
