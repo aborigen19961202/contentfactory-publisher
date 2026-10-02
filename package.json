@@ -8,7 +8,9 @@
     "auth:youtube": "node modules/youtube/auth.mjs",
     "publish": "node worker.mjs",
     "watch": "node worker.mjs --watch",
-    "test": "node --check worker.mjs modules/youtube/index.mjs modules/notifications/index.mjs"
+    "test": "node --check worker.mjs modules/youtube/index.mjs modules/notifications/index.mjs",
+    "test:storage": "node --test tests/stored-video.test.mjs",
+    "test:youtube-stream": "node --experimental-test-module-mocks --test tests/youtube-stream.test.mjs"
   },
   "keywords": [
     "contentfactory",

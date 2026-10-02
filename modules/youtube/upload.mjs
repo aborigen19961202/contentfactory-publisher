@@ -7,7 +7,10 @@ import { getAuthenticatedClient } from './auth.mjs';
  * Uploads a video file and optional thumbnail to YouTube via streaming.
  *
  * @param {Object} options
- * @param {string} options.videoPath - Absolute or relative path to the MP4 file
+ * @param {string} [options.videoPath] - Absolute or relative path to the MP4 file
+ * @param {Object} [options.videoSource] - Streaming source with name, sizeBytes and open()
+ * @param {function} [options.onBeforeUpload] - Persist upload-start marker
+ * @param {function} [options.onUploaded] - Persist returned video ID before follow-up work
  * @param {string} [options.thumbnailPath] - Absolute or relative path to the PNG/JPG thumbnail
  * @param {string} options.title - YouTube video title
  * @param {string} [options.description=''] - YouTube video description
@@ -21,6 +24,9 @@ import { getAuthenticatedClient } from './auth.mjs';
 export async function uploadVideo(options) {
   const {
     videoPath,
+    videoSource,
+    onUploaded,
+    onBeforeUpload,
     thumbnailPath,
     title,
     description = '',
@@ -33,12 +39,12 @@ export async function uploadVideo(options) {
     onProgress,
   } = options;
 
-  if (!videoPath) {
+  if (!videoPath && !videoSource) {
     throw new Error('[YouTube Upload] Missing required parameter: videoPath');
   }
 
-  const resolvedVideoPath = path.resolve(videoPath);
-  if (!fs.existsSync(resolvedVideoPath)) {
+  const resolvedVideoPath = videoPath ? path.resolve(videoPath) : null;
+  if (!videoSource && !fs.existsSync(resolvedVideoPath)) {
     throw new Error(`[YouTube Upload] Video file not found: ${resolvedVideoPath}`);
   }
 
@@ -49,9 +55,9 @@ export async function uploadVideo(options) {
   const oauth2Client = await getAuthenticatedClient({ channel, proxy });
   const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
 
-  const fileStats = fs.statSync(resolvedVideoPath);
+  const fileStats = videoSource ? { size: videoSource.sizeBytes } : fs.statSync(resolvedVideoPath);
   const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
-  console.log(`[YouTube Upload] Starting streaming upload: "${path.basename(resolvedVideoPath)}" (${fileSizeMb} MB)...`);
+  console.log(`[YouTube Upload] Starting streaming upload: "${videoSource?.name || path.basename(resolvedVideoPath)}" (${fileSizeMb} MB)...`);
   if (channel) console.log(`[YouTube Upload] Target channel profile: "${channel}"`);
   if (proxy) console.log(`[YouTube Upload] Network proxy active: "${proxy}"`);
 
@@ -80,30 +86,39 @@ export async function uploadVideo(options) {
   }
 
   let lastReportedPercent = -1;
-  const res = await youtube.videos.insert(
-    {
-      part: ['snippet', 'status'],
-      requestBody,
-      media: {
-        body: fs.createReadStream(resolvedVideoPath),
+  const body = videoSource ? await videoSource.open() : fs.createReadStream(resolvedVideoPath);
+  let res;
+  try {
+    if (onBeforeUpload) await onBeforeUpload();
+    res = await youtube.videos.insert(
+      {
+        part: ['snippet', 'status'],
+        requestBody,
+        media: {
+          body,
+        },
       },
-    },
-    {
-      onUploadProgress: (evt) => {
-        const percent = Math.floor((evt.bytesRead / fileStats.size) * 100);
-        if (percent !== lastReportedPercent && (percent % 5 === 0 || percent === 100)) {
-          lastReportedPercent = percent;
-          const readMb = (evt.bytesRead / (1024 * 1024)).toFixed(1);
-          console.log(`[YouTube Upload] ⏳ Uploading: ${percent}% (${readMb} / ${fileSizeMb} MB)`);
-        }
-        if (onProgress) {
-          onProgress(percent, evt.bytesRead, fileStats.size);
-        }
-      },
-    }
-  );
+      {
+        retry: false,
+        onUploadProgress: (evt) => {
+          const percent = Math.floor((evt.bytesRead / fileStats.size) * 100);
+          if (percent !== lastReportedPercent && (percent % 5 === 0 || percent === 100)) {
+            lastReportedPercent = percent;
+            const readMb = (evt.bytesRead / (1024 * 1024)).toFixed(1);
+            console.log(`[YouTube Upload] ⏳ Uploading: ${percent}% (${readMb} / ${fileSizeMb} MB)`);
+          }
+          if (onProgress) {
+            onProgress(percent, evt.bytesRead, fileStats.size);
+          }
+        },
+      }
+    );
+
+  } finally { body.destroy(); }
 
   const videoId = res.data.id;
+  if (!videoId) throw Error('YOUTUBE_VIDEO_ID_MISSING');
+  if (onUploaded) await onUploaded(videoId);
   const videoUrl = `https://youtu.be/${videoId}`;
   console.log(`[YouTube Upload] ✅ Video uploaded successfully! ID: ${videoId} | URL: ${videoUrl}`);
 

@@ -5,6 +5,7 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import { publishToYouTube } from './modules/youtube/index.mjs';
 import { notifyPublishResult } from './modules/notifications/index.mjs';
+import {loadStoredSource,publishStoredVideo} from './modules/google-drive/source.mjs';
 
 dotenv.config();
 
@@ -96,10 +97,10 @@ async function publishTopicFromDb(topicId, options = {}) {
   try {
     const res = await pool.query(
       `SELECT t.id, t.title, t.youtube_tags, t.topic_context,
-              rj.output_path AS render_output_path
+              rj.output_path AS render_output_path,rj.id AS render_job_id,rj.attempts AS render_attempt
        FROM topics t
        LEFT JOIN LATERAL (
-         SELECT output_path FROM render_jobs
+         SELECT id,attempts,output_path FROM render_jobs
          WHERE topic_id = t.id AND status = 'completed'
          ORDER BY id DESC LIMIT 1
        ) rj ON true
@@ -112,13 +113,15 @@ async function publishTopicFromDb(topicId, options = {}) {
 
     const topic = res.rows[0];
     const videoPath = options.video || topic.render_output_path || `out/topic_${topicId}.mp4`;
-    const resolvedVideoPath = path.resolve(videoPath);
+    const source = !options.video && topic.render_job_id
+      ? await loadStoredSource(pool,topic.render_job_id,topic.render_attempt) : null;
+    const resolvedVideoPath = source ? `drive:${source.output.drive_file_id}` : path.resolve(videoPath);
 
-    if (!fs.existsSync(resolvedVideoPath)) {
+    if (!source && !fs.existsSync(resolvedVideoPath)) {
       throw new Error(`Video file not found at: ${resolvedVideoPath}`);
     }
 
-    const fileStats = fs.statSync(resolvedVideoPath);
+    const fileStats = source ? {size:source.sizeBytes} : fs.statSync(resolvedVideoPath);
     const fileSizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
 
     const title = options.title || topic.title;
@@ -142,6 +145,7 @@ async function publishTopicFromDb(topicId, options = {}) {
     }
 
     if (options.dryRun) {
+      if(source)await source.verify();
       const dryOutput = {
         success: true,
         dryRun: true,
@@ -177,8 +181,8 @@ async function publishTopicFromDb(topicId, options = {}) {
     }
 
     // Step 1: Upload to YouTube
-    const publishResult = await publishToYouTube({
-      videoPath: resolvedVideoPath,
+    const publishOptions = {
+      videoPath: source ? undefined : resolvedVideoPath,
       thumbnailPath: thumbnailPath && fs.existsSync(thumbnailPath) ? thumbnailPath : null,
       title,
       description,
@@ -187,7 +191,10 @@ async function publishTopicFromDb(topicId, options = {}) {
       publishAt,
       channel,
       proxy,
-    });
+    };
+    const publishResult = source
+      ? await publishStoredVideo({pool,source,publish:publishToYouTube,options:publishOptions})
+      : await publishToYouTube(publishOptions);
 
     const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
 
@@ -233,6 +240,12 @@ async function publishTopicFromDb(topicId, options = {}) {
     return output;
   } catch (err) {
     const errorMsg = err.message;
+    if (['VIDEO_TRANSFER_NOT_READY','VIDEO_PUBLICATION_ACTIVE','YOUTUBE_UPLOAD_NEEDS_RECONCILIATION'].includes(errorMsg)) {
+      const pending={success:false,pending:true,topicId,error:errorMsg};
+      if(options.json) console.log(JSON.stringify(pending));
+      else console.log(`[Worker] Publication waiting: ${errorMsg}`);
+      return pending;
+    }
     console.error(`[Worker] ❌ Failed to publish topic #${topicId}:`, errorMsg);
 
     try {
