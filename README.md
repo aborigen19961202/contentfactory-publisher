@@ -89,7 +89,7 @@ MIT
 
 ## Google Drive masters (local implementation, 2026-10-02)
 
-New topic masters with a verified `render_outputs` row stream directly from Drive into the existing YouTube adapter. No video is downloaded to VPS storage. Requires updated 3DCHARTS helpers at `RENDERER_DIR`, existing Drive OAuth config, and the ContentFactoryFlow storage migration. Legacy jobs and direct `--video` uploads keep their local-file source. This does not enable a watch daemon or automatic publication. Not deployed.
+New topic masters with a verified `render_outputs` row stream directly from Drive into the existing YouTube adapter. No video is downloaded to VPS storage. Requires updated 3DCHARTS helpers at `RENDERER_DIR`, existing Drive OAuth config, and the ContentFactoryFlow storage migration. Legacy jobs and direct `--video` uploads keep their local-file source. Deployed on VPS 2026-10-03; registry permissions and streaming adapter tests passed. This does not enable a watch daemon or automatic publication. A real Drive-to-YouTube upload test is pending.
 
 YouTube acknowledgements are persisted in private `~/.local/state/contentfactory-publisher/<output-id>.json` receipts before DB/topic updates. A lost DB response reuses the returned YouTube ID. An upload with an unknown outcome reports `YOUTUBE_UPLOAD_NEEDS_RECONCILIATION` and requires checking YouTube before retrying; never delete that marker blindly.
 
