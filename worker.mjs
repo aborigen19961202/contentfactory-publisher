@@ -5,7 +5,9 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import { publishToYouTube } from './modules/youtube/index.mjs';
 import { notifyPublishResult } from './modules/notifications/index.mjs';
-import {loadStoredSource,publishStoredVideo} from './modules/google-drive/source.mjs';
+import {publishStoredVideo} from './modules/google-drive/source.mjs';
+import {loadPublicationSource,loadPublicationContext} from './modules/publication/source.mjs';
+import {verifyUploadedVideo} from './modules/youtube/verify.mjs';
 
 dotenv.config();
 
@@ -57,6 +59,8 @@ Modes:
 
 Options:
   --topic <id>            Topic ID to publish from database
+  --output-id <uuid>      Publish one exact registered master (automatic executor)
+  --verify-output <uuid> Verify registered YouTube receipt without uploading
   --video <path>          Path to video file
   --thumbnail <path>      Path to thumbnail image
   --title <text>          Video title
@@ -95,27 +99,17 @@ async function publishTopicFromDb(topicId, options = {}) {
   const startTime = Date.now();
 
   try {
-    const res = await pool.query(
-      `SELECT t.id, t.title, t.youtube_tags, t.topic_context,
-              rj.output_path AS render_output_path,rj.id AS render_job_id,rj.attempts AS render_attempt
-       FROM topics t
-       LEFT JOIN LATERAL (
-         SELECT id,attempts,output_path FROM render_jobs
-         WHERE topic_id = t.id AND status = 'completed'
-         ORDER BY id DESC LIMIT 1
-       ) rj ON true
-       WHERE t.id = $1`,
-      [topicId]
-    );
-    if (res.rows.length === 0) {
+    const topic=await loadPublicationContext(pool,{topicId,outputId:options['output-id']});
+    if (!topic) {
       throw new Error(`Topic #${topicId} not found in database.`);
     }
-
-    const topic = res.rows[0];
+    topicId=topic.id;
+    if(options['output-id']&&options.video)throw Error('REGISTERED_SOURCE_OVERRIDE_NOT_ALLOWED');
     const videoPath = options.video || topic.render_output_path || `out/topic_${topicId}.mp4`;
     const source = !options.video && topic.render_job_id
-      ? await loadStoredSource(pool,topic.render_job_id,topic.render_attempt) : null;
-    const resolvedVideoPath = source ? `drive:${source.output.drive_file_id}` : path.resolve(videoPath);
+      ? await loadPublicationSource(pool,topic.render_job_id,topic.render_attempt) : null;
+    if(options['output-id']&&!source)throw Error('REGISTERED_VIDEO_SOURCE_MISSING');
+    const resolvedVideoPath = source ? (source.localPath || `drive:${source.output.drive_file_id}`) : path.resolve(videoPath);
 
     if (!source && !fs.existsSync(resolvedVideoPath)) {
       throw new Error(`Video file not found at: ${resolvedVideoPath}`);
@@ -440,6 +434,20 @@ async function main() {
 
   if (args.watch) {
     await runWatchDaemon();
+    return;
+  }
+
+  if (args['verify-output']) {
+    const pool=await getDbPool();
+    try {
+      const output=(await pool.query('SELECT * FROM public.render_outputs WHERE id=$1',[args['verify-output']])).rows[0];
+      console.log(JSON.stringify(await verifyUploadedVideo(output,{channel:args.channel,proxy:args.proxy})));
+    } finally {await pool.end();}
+    return;
+  }
+
+  if (args['output-id']) {
+    await publishTopicFromDb(null,args);
     return;
   }
 
